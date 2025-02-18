@@ -1,0 +1,15 @@
+# Ignore directories
+__pycache__/
+temp/
+16_9/
+Cheating/
+
+# Ignore media files
+*.mp4
+*.wav
+*.png
+*.srt
+*.7z
+
+# Ignore temp files
+*.pyc
