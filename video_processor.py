@@ -12,11 +12,38 @@ import json
 import shutil
 
 class VideoProcessor:
-    def __init__(self, work_dir: str):
+    def __init__(self, work_dir: str, output_folder: str):
         self.work_dir = work_dir
-        self.temp_dir = os.path.join(work_dir, "temp")
+        self.output_folder = output_folder
+        self.temp_dir = work_dir  # Use work_dir directly for temp files
         os.makedirs(self.temp_dir, exist_ok=True)
         self.timestamp = int(time.time())  # Thêm timestamp cho temp files
+
+    def cleanup(self):
+        """Clean up all temporary files in work directory"""
+        try:
+            # Remove all files in temp directory
+            if os.path.exists(self.temp_dir):
+                for file in os.listdir(self.temp_dir):
+                    file_path = os.path.join(self.temp_dir, file)
+                    try:
+                        os.remove(file_path)
+                        print(f"Removed temp file: {file}")
+                    except Exception as e:
+                        print(f"Error removing {file}: {e}")
+                print("Cleaned up temp directory")
+            
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+
+    def get_temp_path(self, prefix: str, suffix: str) -> str:
+        """Tạo đường dẫn file tạm thởi với timestamp để tránh trùng
+        
+        Args:
+            prefix: Tiền tố của file (ví dụ: 'hook', 'main')
+            suffix: Hậu tố của file (ví dụ: '.mp3', '.ass')
+        """
+        return os.path.join(self.temp_dir, f"{prefix}_{self.timestamp}{suffix}")
 
     def get_audio_duration(self, audio_path: str) -> float:
         """Lấy thời lượng của file audio"""
@@ -26,15 +53,6 @@ class VideoProcessor:
         ]
         duration = float(subprocess.check_output(cmd).decode().strip())
         return duration
-
-    def get_temp_path(self, prefix: str, suffix: str) -> str:
-        """Tạo đường dẫn file tạm thời với timestamp để tránh trùng
-        
-        Args:
-            prefix: Tiền tố của file (ví dụ: 'hook', 'main')
-            suffix: Đuôi file (ví dụ: '.ass', '.mp3')
-        """
-        return os.path.join(self.temp_dir, f"{prefix}_{self.timestamp}{suffix}")
 
     def prepare_and_get_duration(self, hook_mp3: Optional[str], audio_mp3: str) -> Tuple[str, float]:
         """Ghép audio và trả về đường dẫn file final + thời lượng chính xác"""
@@ -220,9 +238,9 @@ class VideoProcessor:
             
             # Lưu file ASS với timestamp
             base_name = os.path.splitext(os.path.basename(srt_path))[0]
-            ass_path = self.get_temp_path(base_name, '.ass')
+            ass_path = os.path.join(self.work_dir, f"{base_name}_{self.timestamp}.ass")
             subs.save(ass_path)
-            print(f"Successfully saved ASS file: {os.path.basename(ass_path)}")
+            print(f"Created ASS file in work directory: {ass_path}")
             
             return ass_path
             
@@ -290,40 +308,75 @@ class VideoProcessor:
             return None
 
     def get_video_duration(self, video_path: str) -> float:
-        """Lấy thời lượng của video"""
-        cmd = [
-            'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1', video_path
-        ]
-        duration = float(subprocess.check_output(cmd).decode().strip())
-        return duration
+        """Lấy thời lượng của video
+        
+        Args:
+            video_path: Đường dẫn đến file video
+        """
+        try:
+            cmd = [
+                'ffprobe',
+                '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'json',
+                video_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            data = json.loads(result.stdout)
+            return float(data['format']['duration'])
+        except Exception as e:
+            print(f"Error getting video duration: {e}")
+            return 0
 
-    def prepare_background_videos(self, video_folder: str, duration: float) -> List[str]:
-        """Chuẩn bị danh sách video background"""
-        videos = []
+    def prepare_background_videos(self, video_folder: str, total_duration: float) -> List[str]:
+        """Chuẩn bị danh sách video background
         
-        for file in os.listdir(video_folder):
-            if file.endswith(('.mp4', '.mkv')):
-                video_path = os.path.join(video_folder, file)
-                try:
-                    # Kiểm tra file có đọc được không
-                    cmd = ['ffprobe', '-v', 'error', video_path]
-                    result = subprocess.run(cmd, capture_output=True, text=True)
-                    if result.returncode == 0:
-                        videos.append(video_path)
-                        print(f"Added video: {file}")
-                    else:
-                        print(f"Skipping {file}: {result.stderr}")
-                except Exception as e:
-                    print(f"Error checking {file}: {e}")
-                    continue
-        
-        if not videos:
-            raise Exception("No valid background videos found in directory. Please check if your video files are valid and have the correct format (mp4/mkv).")
+        Args:
+            video_folder: Thư mục chứa video background
+            total_duration: Tổng thời lượng cần
+        """
+        try:
+            # Lấy tất cả file mp4 trong thư mục
+            video_files = []
+            for file in os.listdir(video_folder):
+                if file.endswith('.mp4'):
+                    video_files.append(os.path.join(video_folder, file))
             
-        # Xáo trộn thứ tự video
-        random.shuffle(videos)
-        return videos
+            if not video_files:
+                raise Exception(f"No mp4 files found in {video_folder}")
+            
+            # Shuffle để random
+            random.shuffle(video_files)
+            
+            # Nếu chỉ có 1 file thì dùng luôn
+            if len(video_files) == 1:
+                return video_files
+            
+            # Chọn đủ số file cần thiết
+            selected_files = []
+            current_duration = 0
+            
+            for video in video_files:
+                duration = self.get_video_duration(video)
+                if duration <= 0:
+                    continue
+                    
+                selected_files.append(video)
+                current_duration += duration
+                
+                # Nếu đã đủ thời lượng thì dừng
+                if current_duration >= total_duration:
+                    break
+            
+            if not selected_files:
+                raise Exception("No valid background videos found")
+                
+            print(f"Selected {len(selected_files)} background videos, total duration: {current_duration:.2f}s")
+            return selected_files
+            
+        except Exception as e:
+            print(f"Error preparing background videos: {e}")
+            return []
 
     def get_overlay_duration(self, hook_duration: float = 0) -> float:
         """Tính thời gian hiển thị overlay thumbnail
@@ -331,6 +384,47 @@ class VideoProcessor:
         - Nếu không có hook: mặc định 5s
         """
         return hook_duration if hook_duration > 0 else 5.0
+
+    def concat_background_videos(self, video_files: List[str], total_duration: float) -> Optional[str]:
+        """Ghép tất cả video nền thành một file duy nhất
+        
+        Args:
+            video_files: Danh sách các file video nền
+            total_duration: Tổng thời lượng cần
+        """
+        try:
+            if not video_files:
+                return None
+                
+            # Tạo file concat.txt
+            concat_file = self.get_temp_path('concat', '.txt')
+            with open(concat_file, 'w', encoding='utf-8') as f:
+                for video in video_files:
+                    f.write(f"file '{video}'\n")
+            
+            # Ghép các video lại
+            output_path = self.get_temp_path('background', '.mp4')
+            cmd = [
+                'ffmpeg', '-y',
+                '-f', 'concat',
+                '-safe', '0',
+                '-i', concat_file,
+                '-c', 'copy',
+                '-t', str(total_duration),
+                output_path
+            ]
+            
+            print("Concatenating background videos...")
+            subprocess.run(cmd, check=True)
+            
+            # Xóa file concat.txt
+            os.remove(concat_file)
+            
+            return output_path
+            
+        except Exception as e:
+            print(f"Error concatenating background videos: {e}")
+            return None
 
     def process_video(self, 
                      hook_mp3: Optional[str],
@@ -380,46 +474,43 @@ class VideoProcessor:
             # 3. Chuẩn bị video background
             if callback: callback("Preparing background videos...", 20)
             background_videos = self.prepare_background_videos(video_folder, total_duration)
-            
-            # 4. Chuẩn bị ffmpeg command
-            if callback: callback("Preparing ffmpeg command...", 40)
-            
-            # Input files và filter_complex
-            inputs = []
+            if not background_videos:
+                raise Exception("No background videos found")
+                
+            # 4. Ghép tất cả video nền thành một file
+            if callback: callback("Concatenating background videos...", 40)
+            background_video = self.concat_background_videos(background_videos, total_duration)
+            if not background_video:
+                raise Exception("Failed to concatenate background videos")
+            print(f"Created background video: {os.path.basename(background_video)}")
+
+            # 5. Tạo filter complex cho ffmpeg
             filter_complex = []
             
-            # Add background videos
-            for i, video in enumerate(background_videos):
-                inputs.extend(['-i', video])
-                if i == 0:
-                    # Video đầu tiên, thêm subtitle
-                    filter_complex.append(f"[{i}:v]null[v{i}]")
-                    last_output = f"v{i}"
-                else:
-                    # Các video sau nối tiếp
-                    start_time = f"{i}*{total_duration}/{len(background_videos)}"
-                    end_time = f"({i}+1)*{total_duration}/{len(background_videos)}"
-                    filter_complex.append(f"[{last_output}][{i}:v]overlay=0:0:enable='between(t,{start_time},{end_time})'[v{i}]")
-                    last_output = f"v{i}"
+            # Add background video
+            inputs = ['-i', background_video]
+            filter_complex.append("[0:v]null[v0]")
+            last_output = "v0"
             
-            # Add subtitle if provided
+            # Add subtitle nếu có
             if merged_ass:
-                # Copy file ass về thư mục gốc
-                final_ass = os.path.join(self.work_dir, os.path.basename(merged_ass))
+                # Copy file ass về thư mục code trước khi xử lý video
+                code_dir = os.getcwd()  # Thư mục chứa code
+                final_ass = os.path.join(code_dir, os.path.basename(merged_ass))
                 shutil.copy2(merged_ass, final_ass)
-                print(f"Copied subtitle to: {final_ass}")
+                print(f"Copied subtitle to code directory: {final_ass}")
                 
-                # Dùng file ass từ thư mục gốc
+                # Dùng file ass từ thư mục code
                 filter_complex.append(f"[{last_output}]ass='{os.path.basename(final_ass)}'[subbed]")
                 last_output = "subbed"
             
             # Add audio
             inputs.extend(['-i', final_audio])
             
-            # Add thumbnail if provided
+            # Add thumbnail nếu có
             if thumbnail:
                 inputs.extend(['-i', thumbnail])
-                thumb_idx = len(background_videos) + 1  # +1 for audio input
+                thumb_idx = 2  # background + audio + thumbnail
                 overlay_duration = self.get_overlay_duration(hook_duration)
                 print(f"Thumbnail overlay duration: {overlay_duration:.2f}s")
                 
@@ -439,7 +530,7 @@ class VideoProcessor:
             ] + inputs + [
                 '-filter_complex', ';'.join(filter_complex),
                 '-map', f'[{last_output}]',  # video output
-                '-map', f'{len(background_videos)}:a',  # audio output
+                '-map', '1:a',  # audio output
                 '-c:v', 'h264_nvenc',
                 '-preset', 'p7',
                 '-b:v', '5M',
@@ -450,33 +541,25 @@ class VideoProcessor:
             # Add duration if specified
             if total_duration:
                 cmd.extend(['-t', str(total_duration)])
-                
+            
             # Tạo tên output từ tên audio và timestamp
             audio_name = os.path.splitext(os.path.basename(audio_mp3))[0]
             output_name = f"{audio_name}_{self.timestamp}.mp4"
-            output_path = os.path.join(self.work_dir, output_name)
-            print(f"Output will be saved as: {output_name}")
+            output_path = os.path.join(self.output_folder, output_name)  # Tạo trực tiếp trong output folder
+            print(f"Output will be saved as: {output_path}")
             
             # Add output file
             cmd.append(output_path)
             
+            # Thực thi command
             print("Executing command:", ' '.join(cmd))
             subprocess.run(cmd, check=True)
             
-            # Cleanup temporary files
-            try:
-                if final_audio and os.path.exists(final_audio):
-                    os.remove(final_audio)
-                    print(f"Removed temp audio: {final_audio}")
-                if merged_ass and os.path.exists(merged_ass):
-                    os.remove(merged_ass)
-                    print(f"Removed temp subtitle: {merged_ass}")
-                # Xóa file SRT merged nếu có
-                if 'merged_srt' in locals() and merged_srt and os.path.exists(merged_srt):
-                    os.remove(merged_srt)
-                    print(f"Removed temp SRT: {merged_srt}")
-            except Exception as e:
-                print(f"Warning: Error cleaning up temp files: {e}")
+            # Đợi một chút để đảm bảo ffmpeg đã giải phóng hết file
+            time.sleep(1)
+            
+            # Cleanup tất cả file tạm sau khi đã hoàn thành
+            self.cleanup()
             
             if callback: callback("Done!", 100)
             return output_path

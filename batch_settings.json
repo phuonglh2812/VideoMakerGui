@@ -1,0 +1,13 @@
+{
+  "input_folder": "D:/Test/Test",
+  "output_folder": "D:/Test/Test/Test",
+  "video_folder": "D:/AutomateWorkFlow/WorkflowFile/VideoMakerS_Files/cut/cut",
+  "preset_name": "2",
+  "suffixes": {
+    "audio": "_audio",
+    "hook": "_hook",
+    "subtitle": "_audio",
+    "hook_subtitle": "_hook",
+    "thumbnail": "_Hook"
+  }
+}
